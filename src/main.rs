@@ -6,17 +6,22 @@ use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, process};
 
+use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::consensus::encode;
 use bitcoin::network::stream_reader::StreamReader;
 use bitcoin::network::{
     address, constants, message, message_blockdata::GetHeadersMessage, message_network,
 };
+use bitcoin::util::hash::BitcoinHash;
+use bitcoin::BlockHash;
 
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
 use rand::Rng;
 
 fn main() {
+    let mut header_chain: Vec<BlockHeader> = vec![];
+
     // This example establishes a connection to a Bitcoin node, sends the intial
     // "version" message, waits for the reply, and finally closes the connection.
     let args: Vec<String> = env::args().collect();
@@ -81,7 +86,32 @@ fn main() {
                     println!("Sent getheaders message");
                 }
                 message::NetworkMessage::Headers(block_hashes) => {
-                    println!("Received headers: {:?}", block_hashes.len());
+                    header_chain.append(&mut block_hashes.clone());
+                    let mut locator = vec![];
+
+                    for header in header_chain.iter().rev() {
+                        locator.push(header.bitcoin_hash());
+                        if locator.len() >= 10 {
+                            break;
+                        }
+                    }
+
+                    //let locator = header_chain.iter().rev().take(10).collect();
+                    let payload = message::NetworkMessage::GetHeaders(GetHeadersMessage::new(
+                        locator,
+                        BlockHash::default(),
+                    ));
+                    let msg = message::RawNetworkMessage {
+                        magic: constants::Network::Bitcoin.magic(),
+                        payload,
+                    };
+                    let _ = stream.write_all(encode::serialize(&msg).as_slice());
+                    println!(
+                        "Received {} headers, {} total",
+                        block_hashes.len(),
+                        header_chain.len()
+                    );
+                    println!("Sent getheaders message");
                 }
                 _ => {
                     println!("Received unknown message: {:?}", reply.cmd());
