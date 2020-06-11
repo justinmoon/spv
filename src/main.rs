@@ -1,5 +1,6 @@
 extern crate bitcoin;
 
+use core::str::FromStr;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -63,12 +64,14 @@ fn main() {
                 }
                 message::NetworkMessage::Verack => {
                     println!("Received verack message: {:?}", reply.payload);
-                    let locator = vec![];
-                    let first = Sha256dHash::default();
-
+                    let genesis = Sha256dHash::from_str(
+                        &"000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+                    )
+                    .unwrap();
+                    let locator = vec![genesis.clone().into()];
                     let payload = message::NetworkMessage::GetHeaders(GetHeadersMessage::new(
                         locator,
-                        first.into(),
+                        genesis.into(),
                     ));
                     let msg = message::RawNetworkMessage {
                         magic: constants::Network::Bitcoin.magic(),
@@ -77,8 +80,11 @@ fn main() {
                     let _ = stream.write_all(encode::serialize(&msg).as_slice());
                     println!("Sent getheaders message");
                 }
+                message::NetworkMessage::Headers(block_hashes) => {
+                    println!("Received headers: {:?}", block_hashes.len());
+                }
                 _ => {
-                    println!("Received unknown message: {:?}", reply.payload);
+                    println!("Received unknown message: {:?}", reply.cmd());
                 }
             }
         }
