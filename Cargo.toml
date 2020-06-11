@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 bitcoin = "0.23.0"
 rand = "0.7.3"
+bitcoin_hashes = "0.7.6"

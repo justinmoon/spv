@@ -7,7 +7,12 @@ use std::{env, process};
 
 use bitcoin::consensus::encode;
 use bitcoin::network::stream_reader::StreamReader;
-use bitcoin::network::{address, constants, message, message_network};
+use bitcoin::network::{
+    address, constants, message, message_blockdata::GetHeadersMessage, message_network,
+};
+
+use bitcoin_hashes::sha256d::Hash as Sha256dHash;
+
 use rand::Rng;
 
 fn main() {
@@ -58,11 +63,22 @@ fn main() {
                 }
                 message::NetworkMessage::Verack => {
                     println!("Received verack message: {:?}", reply.payload);
-                    break;
+                    let locator = vec![];
+                    let first = Sha256dHash::default();
+
+                    let payload = message::NetworkMessage::GetHeaders(GetHeadersMessage::new(
+                        locator,
+                        first.into(),
+                    ));
+                    let msg = message::RawNetworkMessage {
+                        magic: constants::Network::Bitcoin.magic(),
+                        payload,
+                    };
+                    let _ = stream.write_all(encode::serialize(&msg).as_slice());
+                    println!("Sent getheaders message");
                 }
                 _ => {
                     println!("Received unknown message: {:?}", reply.payload);
-                    break;
                 }
             }
         }

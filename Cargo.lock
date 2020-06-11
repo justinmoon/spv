@@ -122,6 +122,7 @@ name = "spv"
 version = "0.1.0"
 dependencies = [
  "bitcoin",
+ "bitcoin_hashes",
  "rand",
 ]
 
