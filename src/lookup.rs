@@ -8,6 +8,7 @@ use std::{env, process};
 
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::consensus::encode;
+use bitcoin::hashes::Hash;
 use bitcoin::network::stream_reader::StreamReader;
 use bitcoin::network::{
     address, constants, message,
@@ -15,6 +16,7 @@ use bitcoin::network::{
     message_filter::{CFCheckpt, GetCFCheckpt, GetCFHeaders, GetCFilters},
     message_network,
 };
+use bitcoin::util::bip158::BlockFilter;
 use bitcoin::util::hash::BitcoinHash;
 use bitcoin::{BlockHash, FilterHash};
 
@@ -74,16 +76,21 @@ pub fn run() {
                 }
                 message::NetworkMessage::Verack => {
                     println!("Received verack message: {:?}", reply.payload);
-                    let start_height = 1;
+                    let start_height = 0;
                     let stop_hash = BlockHash::from_str(
                         // block 1000
-                        &"00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09",
-                        //&"00000000a2887344f8db859e372e7e4bc26b23b9de340f725afbf2edb265b4c6",
+                        //&"00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09",
+                        // block 10
+                        //&"000000002c05cc2e78923c34df87fd108b22221ac6076c18f3ade378a4d915e9",
+                        // block 100000
+                        &"000000000003ba27aa200b1cecaad478d2b00432346c3f1f3986da1afd33e506",
                     )
                     .unwrap();
+
+                    // Get Filters
                     let payload = message::NetworkMessage::GetCFilters(GetCFilters {
                         filter_type: 0,
-                        start_height: 1000,
+                        start_height,
                         stop_hash,
                     });
                     let msg = message::RawNetworkMessage {
@@ -92,9 +99,10 @@ pub fn run() {
                     };
                     let _ = stream.write_all(encode::serialize(&msg).as_slice());
 
+                    // Get Headers
                     let payload = message::NetworkMessage::GetCFHeaders(GetCFHeaders {
                         filter_type: 0,
-                        start_height: 1000,
+                        start_height,
                         stop_hash,
                     });
                     let msg = message::RawNetworkMessage {
@@ -102,10 +110,49 @@ pub fn run() {
                         payload,
                     };
                     let _ = stream.write_all(encode::serialize(&msg).as_slice());
+
+                    // Get Checkpoints
+                    let payload = GetCFCheckpt {
+                        filter_type: 0,
+                        stop_hash: block_headers[block_headers.len() - 1].bitcoin_hash(),
+                    };
+                    let msg = message::RawNetworkMessage {
+                        magic: constants::Network::Bitcoin.magic(),
+                        payload: message::NetworkMessage::GetCFCheckpt(payload),
+                    };
+                    let _ = stream.write_all(encode::serialize(&msg).as_slice());
+                    println!("Sent getcfcheckpt");
+                }
+                message::NetworkMessage::CFCheckpt(cfcheckpt) => {
+                    // Save checkpoints
+                    println!("received cfcheckpt: {:?}", &cfcheckpt);
+                    for filter_header in cfcheckpt.filter_headers {
+                        checkpoints.push(filter_header);
+                    }
+
+                    // Start downloading block filters
+                    let start_height = 0;
+                    let stop_hash = block_headers[filter_hashes.len() + 999].bitcoin_hash();
+                    let payload = message::NetworkMessage::GetCFHeaders(GetCFHeaders {
+                        filter_type: 0,
+                        start_height,
+                        stop_hash,
+                    });
+                    println!("sending getcfheaders: {:?}", payload);
+                    let msg = message::RawNetworkMessage {
+                        magic: constants::Network::Bitcoin.magic(),
+                        payload,
+                    };
+                    let _ = stream.write_all(encode::serialize(&msg).as_slice());
                 }
                 message::NetworkMessage::CFHeaders(cfheaders) => {
-                    println!("CFHeaders: {:?}", cfheaders);
-                    println!("CFHeaders.len: {:?}", cfheaders.filter_hashes.len());
+                    let mut header = cfheaders.previous_filter;
+                    for filter_hash in cfheaders.filter_hashes.iter() {
+                        let mut header_data = [0u8; 64];
+                        header_data[0..32].copy_from_slice(&filter_hash[..]);
+                        header_data[32..64].copy_from_slice(&header[..]);
+                        header = FilterHash::hash(&header_data);
+                    }
                 }
                 message::NetworkMessage::CFilter(cfilter) => {
                     println!("CFilter: {:?}", cfilter);

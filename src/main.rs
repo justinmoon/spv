@@ -169,5 +169,5 @@ fn build_version_message(address: SocketAddr) -> message::NetworkMessage {
 }
 
 fn main() {
-    lookup::run();
+    checkpoints::run();
 }
