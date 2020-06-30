@@ -10,19 +10,21 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::consensus::encode;
 use bitcoin::network::stream_reader::StreamReader;
 use bitcoin::network::{
-    address, constants, message, message_blockdata::GetHeadersMessage, message_network,
+    address, constants, message,
+    message_blockdata::GetHeadersMessage,
+    message_filter::{CFCheckpt, GetCFCheckpt},
+    message_network,
 };
 use bitcoin::util::hash::BitcoinHash;
-use bitcoin::BlockHash;
+use bitcoin::{BlockHash, FilterHash};
 
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
 use rand::Rng;
 
-pub mod checkpoints;
-
-fn headers() {
+pub fn run() {
     let mut header_chain: Vec<BlockHeader> = vec![];
+    let mut checkpoints: Vec<FilterHash> = vec![];
 
     // This example establishes a connection to a Bitcoin node, sends the intial
     // "version" message, waits for the reply, and finally closes the connection.
@@ -89,31 +91,53 @@ fn headers() {
                 }
                 message::NetworkMessage::Headers(block_hashes) => {
                     header_chain.append(&mut block_hashes.clone());
-                    let mut locator = vec![];
+                    println!("received headers");
 
-                    for header in header_chain.iter().rev() {
-                        locator.push(header.bitcoin_hash());
-                        if locator.len() >= 10 {
-                            break;
+                    //if header_chain.len() < 100000 {
+                    if block_hashes.len() == 2000 {
+                        // Send getheaders
+                        let mut locator = vec![];
+
+                        for header in header_chain.iter().rev() {
+                            locator.push(header.bitcoin_hash());
+                            if locator.len() >= 10 {
+                                break;
+                            }
                         }
-                    }
 
-                    //let locator = header_chain.iter().rev().take(10).collect();
-                    let payload = message::NetworkMessage::GetHeaders(GetHeadersMessage::new(
-                        locator,
-                        BlockHash::default(),
-                    ));
-                    let msg = message::RawNetworkMessage {
-                        magic: constants::Network::Bitcoin.magic(),
-                        payload,
-                    };
-                    let _ = stream.write_all(encode::serialize(&msg).as_slice());
-                    println!(
-                        "Received {} headers, {} total",
-                        block_hashes.len(),
-                        header_chain.len()
-                    );
-                    println!("Sent getheaders message");
+                        let payload = message::NetworkMessage::GetHeaders(GetHeadersMessage::new(
+                            locator,
+                            BlockHash::default(),
+                        ));
+                        let msg = message::RawNetworkMessage {
+                            magic: constants::Network::Bitcoin.magic(),
+                            payload,
+                        };
+                        let _ = stream.write_all(encode::serialize(&msg).as_slice());
+                        println!(
+                            "Received {} headers, {} total",
+                            block_hashes.len(),
+                            header_chain.len()
+                        );
+                        println!("Sent getheaders message");
+                    } else {
+                        // get filter checkpoints
+                        let payload = GetCFCheckpt {
+                            filter_type: 0,
+                            stop_hash: header_chain[header_chain.len() - 1].bitcoin_hash(),
+                        };
+                        let msg = message::RawNetworkMessage {
+                            magic: constants::Network::Bitcoin.magic(),
+                            payload: message::NetworkMessage::GetCFCheckpt(payload),
+                        };
+                        let _ = stream.write_all(encode::serialize(&msg).as_slice());
+                        println!("Sent getcfcheckpt");
+                    }
+                }
+                message::NetworkMessage::CFCheckpt(cfcheckpt) => {
+                    for filter_header in cfcheckpt.filter_headers {
+                        checkpoints.push(filter_header);
+                    }
                 }
                 _ => {
                     println!("Received unknown message: {:?}", reply.cmd());
@@ -165,8 +189,4 @@ fn build_version_message(address: SocketAddr) -> message::NetworkMessage {
         user_agent,
         start_height,
     ))
-}
-
-fn main() {
-    checkpoints::run();
 }
