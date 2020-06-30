@@ -20,6 +20,7 @@ use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use rand::Rng;
 
 pub mod checkpoints;
+pub mod lookup;
 
 fn headers() {
     let mut header_chain: Vec<BlockHeader> = vec![];
@@ -168,5 +169,5 @@ fn build_version_message(address: SocketAddr) -> message::NetworkMessage {
 }
 
 fn main() {
-    checkpoints::run();
+    lookup::run();
 }
