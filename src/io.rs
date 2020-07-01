@@ -12,14 +12,20 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn read() -> Result<Self, Error> {
-        let file = File::open("db.json")?;
-        let reader = BufReader::new(file);
-        let db: Self = serde_json::from_reader(reader)?;
-        Ok(db)
+    pub fn new() -> Self {
+        Self { headers: vec![] }
     }
 
-    pub fn write(&self) -> Result<(), Error> {
+    pub fn read() -> Result<Self, Error> {
+        if let Ok(file) = File::open("db.json") {
+            let reader = BufReader::new(file);
+            let db: Self = serde_json::from_reader(reader)?;
+            return Ok(db);
+        }
+        Ok(Db::new())
+    }
+
+    pub fn save(&self) -> Result<(), Error> {
         let path = String::from("db.json");
         let serialized = serde_json::to_string(&self)?;
         fs::write(path, serialized)?;
@@ -42,7 +48,7 @@ mod tests {
 
         let headers = vec![header, header, header];
         let db = Db { headers };
-        db.write().unwrap();
+        db.save().unwrap();
         let from_disk = Db::read().unwrap();
         assert_eq!(db, from_disk);
     }

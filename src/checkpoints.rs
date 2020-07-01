@@ -20,16 +20,18 @@ use bitcoin::util::bip158::BlockFilter;
 use bitcoin::util::hash::BitcoinHash;
 use bitcoin::{BlockHash, FilterHash};
 
+use crate::io::Db;
+
 use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 
 use rand::Rng;
 
 pub fn run() {
-    let mut block_headers: Vec<BlockHeader> = vec![];
+    let mut db = Db::read().unwrap();
     let mut checkpoints: Vec<FilterHash> = vec![];
     let mut filter_headers: Vec<FilterHash> = vec![];
     let mut filters: Vec<BlockFilter> = vec![];
-    let tree = sled::open("spv.db").expect("open");
+
     //let mut filter_headers: Vec<FilterHash> = vec![FilterHash::from_str(
     //&"0000000000000000000000000000000000000000000000000000000000000000",
     //)
@@ -86,8 +88,8 @@ pub fn run() {
                         &"000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
                     )
                     .unwrap();
-                    //let locator = vec![genesis.clone().into()];
-                    let locator = vec![];
+                    let locator = vec![genesis.clone().into()];
+                    //let locator = vec![];
                     let payload = message::NetworkMessage::GetHeaders(GetHeadersMessage::new(
                         locator,
                         genesis.into(),
@@ -102,8 +104,10 @@ pub fn run() {
                 message::NetworkMessage::Headers(new_block_headers) => {
                     //block_headers.append(&mut block_hashes.clone());
                     for new_header in &new_block_headers {
-                        if let Some(last_header) = block_headers.last() {
-                            assert_eq!(last_header.bitcoin_hash(), new_header.prev_blockhash);
+                        if let Some(last_header) = db.headers.last() {
+                            if last_header.bitcoin_hash() != new_header.prev_blockhash {
+                                continue;
+                            }
                         } else {
                             let genesis = BlockHash::from_str(
                                 &"000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
@@ -112,14 +116,14 @@ pub fn run() {
                             assert_eq!(genesis, new_header.bitcoin_hash());
                         }
 
-                        block_headers.push(*new_header);
+                        db.headers.push(*new_header);
                     }
-                    //if new_block_headers.len() == 2000 {
-                    if block_headers.len() < 10000 {
+                    if new_block_headers.len() == 2000 {
+                        //if db.headers.len() < 10000 {
                         // Send getheaders
                         let mut locator = vec![];
 
-                        for header in block_headers.iter().rev() {
+                        for header in db.headers.iter().rev() {
                             locator.push(header.bitcoin_hash());
                             if locator.len() >= 10 {
                                 break;
@@ -138,14 +142,22 @@ pub fn run() {
                         println!(
                             "Received {} headers, {} total",
                             new_block_headers.len(),
-                            block_headers.len()
+                            db.headers.len()
                         );
                         println!("Sent getheaders message");
                     } else {
+                        // Save
+                        let start = std::time::Instant::now();
+                        println!("saving db");
+                        db.save().unwrap();
+                        println!("saved db");
+                        let end = std::time::Instant::now();
+                        println!("Elapsed time saving db: {:?}", end - start);
+
                         // get filter checkpoints
                         let payload = GetCFCheckpt {
                             filter_type: 0,
-                            stop_hash: block_headers[block_headers.len() - 1].bitcoin_hash(),
+                            stop_hash: db.headers[db.headers.len() - 1].bitcoin_hash(),
                         };
                         let msg = message::RawNetworkMessage {
                             magic: constants::Network::Bitcoin.magic(),
@@ -164,7 +176,8 @@ pub fn run() {
 
                     // Get Headers
                     let start_height = 0;
-                    let stop_hash = block_headers[filter_headers.len() + 999].bitcoin_hash();
+                    println!("{}", db.headers.len());
+                    let stop_hash = db.headers[filter_headers.len() + 999].bitcoin_hash();
                     let payload = message::NetworkMessage::GetCFHeaders(GetCFHeaders {
                         filter_type: 0,
                         start_height,
@@ -195,9 +208,9 @@ pub fn run() {
                     let start_height = filter_headers.len();
                     let stop_height = std::cmp::min(
                         filter_headers.len() + 999,
-                        block_headers.len() - filter_headers.len(),
+                        db.headers.len() - filter_headers.len(),
                     );
-                    let stop_hash = block_headers[stop_height].bitcoin_hash();
+                    let stop_hash = db.headers[stop_height].bitcoin_hash();
                     let payload = message::NetworkMessage::GetCFHeaders(GetCFHeaders {
                         filter_type: 0,
                         start_height: start_height as u32,
@@ -219,7 +232,7 @@ pub fn run() {
                     let payload = message::NetworkMessage::GetCFilters(GetCFilters {
                         filter_type: 0,
                         start_height: 0,
-                        stop_hash: block_headers[1].bitcoin_hash(),
+                        stop_hash: db.headers[1].bitcoin_hash(),
                     });
                     let msg = message::RawNetworkMessage {
                         magic: constants::Network::Bitcoin.magic(),
@@ -235,7 +248,7 @@ pub fn run() {
                     println!("CFilter: {:?}\n\n\n", cfilter);
                     let next_height = filters.len();
                     let current_height = std::cmp::max(next_height, 0);
-                    let next_block_hash = block_headers[next_height].bitcoin_hash();
+                    let next_block_hash = db.headers[next_height].bitcoin_hash();
 
                     // Check that
                     if next_block_hash != cfilter.block_hash {
@@ -243,7 +256,7 @@ pub fn run() {
                         println!("filters.len() {}", filters.len());
                         println!("height: {:?}", next_height);
                         for i in 0..2 {
-                            println!("headers {}: {:?}", i, block_headers[i]);
+                            println!("headers {}: {:?}", i, db.headers[i]);
                         }
                         println!("expected: {:?}", next_block_hash);
                         println!("found: {:?}", cfilter.block_hash);
@@ -278,7 +291,7 @@ pub fn run() {
                     let payload = message::NetworkMessage::GetCFilters(GetCFilters {
                         filter_type: 0,
                         start_height: next_height as u32,
-                        stop_hash: block_headers[next_height + 1].bitcoin_hash(),
+                        stop_hash: db.headers[next_height + 1].bitcoin_hash(),
                     });
                     let msg = message::RawNetworkMessage {
                         magic: constants::Network::Bitcoin.magic(),

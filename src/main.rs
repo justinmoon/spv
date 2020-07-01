@@ -3,6 +3,7 @@ extern crate bitcoin;
 use core::str::FromStr;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, process};
 
