@@ -24,7 +24,7 @@ mod io;
 use crate::io::Db;
 
 pub fn main() {
-    let mut db = Db::read().unwrap();
+    let mut db = Db::new();
     let mut filters: Vec<BlockFilter> = vec![];
 
     //let mut filter_headers: Vec<FilterHash> = vec![FilterHash::from_str(
@@ -47,6 +47,7 @@ pub fn main() {
         process::exit(1);
     });
 
+    println!("starting");
     let version_message = build_version_message(address);
 
     let first_message = message::RawNetworkMessage {
@@ -225,10 +226,15 @@ pub fn main() {
 
                 //if stop_height < 1000 {
                 // Get Filters
+                let start_height = db.filter_headers.len();
+                if start_height >= db.headers.len() {
+                    continue;
+                }
+                let stop_hash = db.headers[start_height].bitcoin_hash();
                 let payload = message::NetworkMessage::GetCFilters(GetCFilters {
                     filter_type: 0,
-                    start_height: 0,
-                    stop_hash: db.headers[1].bitcoin_hash(),
+                    start_height: start_height as u32,
+                    stop_hash,
                 });
                 let msg = message::RawNetworkMessage {
                     magic: constants::Network::Bitcoin.magic(),
@@ -343,4 +349,213 @@ fn build_version_message(address: SocketAddr) -> message::NetworkMessage {
         user_agent,
         start_height,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoin::consensus::encode::deserialize;
+    use bitcoin::{Address, BlockHeader, Script};
+    use hex::decode as hex_decode;
+
+    #[test]
+    fn simple_test() {
+        let raw = hex_decode("010000004ddccd549d28f385ab457e98d1b11ce80bfea2c5ab93015ade4973e400000000bf4473e53794beae34e64fccc471dace6ae544180816f89591894e0f417a914cd74d6e49ffff001d323b3a7b").unwrap();
+
+        let header: BlockHeader =
+            deserialize(&raw).expect("Can't deserialize correct block header");
+
+        let headers = vec![header, header, header];
+        let db = Db {
+            headers,
+            checkpoints: vec![],
+            filter_headers: vec![],
+        };
+        db.save().unwrap();
+        let from_disk = Db::read().unwrap();
+        assert_eq!(db, from_disk);
+    }
+
+    #[test]
+    fn test_block_filter() {
+        // or create a filter from known raw data
+        let filter = BlockFilter::new(&hex_decode("01494ac0").unwrap());
+
+        // read and evaluate a filter
+        let block_hash =
+            BlockHash::from_str("4f4dbdc4f62f3cf13db071e70f7eba5c36b7b1334bf68c1e69b7f76ae10003d0")
+                .unwrap();
+        let address = Address::from_str("bcrt1qs0wzcfx0ltany6gq43ds3w88kcuxu4umxdrx5u").unwrap();
+        //let query: Iterator<Item = Script> = vec![address.script_pubkey()];
+        let query = vec![address.script_pubkey()];
+        let matches = filter
+            .match_any(&block_hash, &mut query.iter().map(|s| s.as_bytes()))
+            .unwrap();
+        assert!(matches);
+
+        let address = Address::from_str("bcrt1qdwasrapfa8xdumgeg4pgujl94lug570t7a6f8m").unwrap();
+        //let query: Iterator<Item = Script> = vec![address.script_pubkey()];
+        let query = vec![address.script_pubkey()];
+        let matches = filter
+            .match_any(&block_hash, &mut query.iter().map(|s| s.as_bytes()))
+            .unwrap();
+        assert!(!matches);
+    }
+
+    fn test_regtest() {}
+}
+
+#[cfg(test)]
+mod rpc_test {
+    use super::*;
+    use crate::descriptor::*;
+    use crate::{sled, Wallet};
+    use bitcoin::util::bip32::ExtendedPrivKey;
+    use bitcoin::{Amount, Network};
+    use bitcoincore_rpc::{Auth, Client};
+    use dirs::home_dir;
+
+    use std::str::FromStr;
+
+    use rand::distributions::Alphanumeric;
+    use rand::{thread_rng, Rng, RngCore};
+
+    fn rand_str() -> String {
+        thread_rng().sample_iter(&Alphanumeric).take(10).collect()
+    }
+
+    fn make_descriptors() -> (String, String) {
+        let mut seed = vec![0u8; 16];
+        thread_rng().fill_bytes(seed.as_mut_slice());
+
+        let network = Network::Bitcoin;
+        let sk = ExtendedPrivKey::new_master(network, &seed).unwrap();
+        let external = format!("wpkh({}/0/*)", sk.to_string());
+        let internal = format!("wpkh({}/1/*)", sk.to_string());
+        (external, internal)
+    }
+
+    fn test_rpc_sync() {
+        // Create a random wallet name
+        let wallet_name = rand_str();
+
+        // Create blockchain client
+        let wallet_url = String::from(format!("http://127.0.0.1:18443/wallet/{}", wallet_name));
+        let default_url = String::from("http://127.0.0.1:18443/wallet/");
+        let path = std::path::PathBuf::from(format!(
+            "{}/.bitcoin/regtest/.cookie",
+            home_dir().unwrap().to_str().unwrap()
+        ));
+        let auth = Auth::CookieFile(path);
+        let wallet_client = Client::new(wallet_url.clone(), auth.clone()).unwrap();
+        let default_client = Client::new(default_url, auth.clone()).unwrap();
+
+        // Create watch-only wallet
+        default_client
+            .create_wallet(&wallet_name, Some(true))
+            .unwrap();
+
+        // Mine 150 blocks to default wallet
+        let default_addr = default_client.get_new_address(None, None).unwrap();
+        default_client
+            .generate_to_address(150, &default_addr)
+            .unwrap();
+
+        // Send 1 BTC to each of first 21 wallet addresses, so that we need multiple
+        // listtransactions calls
+        let (desc_ext, desc_int) = make_descriptors();
+        let extended = ExtendedDescriptor::from_str(&desc_ext).unwrap();
+        for index in 0..21 {
+            let derived = extended.derive(index).unwrap();
+            let address = derived.address(Network::Regtest).unwrap();
+            let amount = Amount::from_btc(1.0).unwrap();
+            default_client
+                .send_to_address(&address, amount, None, None, None, None, None, None)
+                .unwrap();
+        }
+
+        // Mine another block so ^^ are confirmed
+        default_client
+            .generate_to_address(1, &default_addr)
+            .unwrap();
+
+        // Sync the wallet
+        let wallet = Wallet::new(
+            &desc_ext,
+            Some(&desc_int),
+            Network::Regtest,
+            tree.clone(),
+            blockchain,
+        )
+        .await
+        .unwrap();
+        wallet.sync(None, None).await.unwrap();
+
+        // Check that RPC and database show same transactions
+        let wallet_txs = wallet.list_transactions(false).unwrap();
+        assert_eq!(21, wallet_txs.len());
+
+        // Check unspents
+        let wallet_unspent = wallet.list_unspent().unwrap();
+        assert_eq!(21, wallet_unspent.len());
+
+        // Check balances
+        let wallet_client = Client::new(wallet_url, auth.clone()).unwrap();
+        let wallet_balance = Amount::from_sat(wallet.get_balance().unwrap());
+        let rpc_balance = wallet_client.get_balance(None, Some(true)).unwrap();
+        assert_eq!(wallet_balance, rpc_balance);
+
+        // Spend one utxo back to default wallet, mine a block, sync wallet
+        let (psbt, _) = wallet
+            .create_tx(
+                vec![(default_addr.clone(), 100000000)],
+                false,
+                1.0 * 1e-5,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let (psbt, _) = wallet.sign(psbt, None).unwrap();
+        let tx = psbt.extract_tx();
+        wallet.broadcast(tx.clone()).await.unwrap();
+        default_client
+            .generate_to_address(1, &default_addr)
+            .unwrap();
+        wallet.sync(None, None).await.unwrap();
+
+        // One more transaction, one less utxo
+        assert_eq!(22, wallet.list_transactions(false).unwrap().len());
+        assert_eq!(20, wallet.list_unspent().unwrap().len());
+
+        let input_amount: u64 = tx
+            .input
+            .iter()
+            .map(|i| {
+                tree.get_previous_output(&i.previous_output)
+                    .unwrap()
+                    .unwrap()
+                    .value
+            })
+            .sum();
+        let output_amount: u64 = tx.output.iter().map(|o| o.value as u64).sum();
+        let fee = input_amount - output_amount;
+        assert_eq!(
+            wallet_balance - Amount::from_btc(1.0).unwrap() - Amount::from_sat(fee),
+            Amount::from_sat(wallet.get_balance().unwrap())
+        );
+
+        // generate an address
+        // fund that address
+        // check the balance
+        // sweep that address
+        // check the balance
+
+        // missing pieces
+        // 1. run in thread and still access balances
+        // 2. check block filter against list of script pubkeys
+        // 3. requests blocks that match
+        // 4. handle block messages
+        // 5. save balances somewhere
+    }
 }

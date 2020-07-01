@@ -28,9 +28,12 @@ impl Db {
     }
 
     pub fn read() -> Result<Self, Error> {
+        let start = std::time::Instant::now();
         if let Ok(file) = File::open("db.json") {
             let reader = BufReader::new(file);
             let db: Self = serde_json::from_reader(reader)?;
+            let end = std::time::Instant::now();
+            println!("db opened in {:?}", end - start);
             return Ok(db);
         }
         Ok(Db::new())
