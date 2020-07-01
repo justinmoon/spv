@@ -29,6 +29,7 @@ pub fn run() {
     let mut checkpoints: Vec<FilterHash> = vec![];
     let mut filter_headers: Vec<FilterHash> = vec![];
     let mut filters: Vec<BlockFilter> = vec![];
+    let tree = sled::open("spv.db").expect("open");
     //let mut filter_headers: Vec<FilterHash> = vec![FilterHash::from_str(
     //&"0000000000000000000000000000000000000000000000000000000000000000",
     //)

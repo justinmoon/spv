@@ -20,6 +20,8 @@ use bitcoin_hashes::sha256d::Hash as Sha256dHash;
 use rand::Rng;
 
 pub mod checkpoints;
+pub mod error;
+pub mod io;
 pub mod lookup;
 
 fn headers() {
