@@ -1,5 +1,6 @@
 use crate::error::Error;
-use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::{block::BlockHeader, constants::genesis_block};
+use bitcoin::{FilterHash, Network};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::fs;
@@ -9,11 +10,21 @@ use std::io::BufReader;
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Db {
     pub headers: Vec<BlockHeader>,
+    pub checkpoints: Vec<FilterHash>,
+    pub filter_headers: Vec<FilterHash>,
+    //#[serde(skip)]
+    //pub filters: Vec<BlockFilter>,
 }
 
 impl Db {
     pub fn new() -> Self {
-        Self { headers: vec![] }
+        // FIXME: don't assume mainnet
+        let genesis_header = genesis_block(Network::Bitcoin).header;
+        Self {
+            headers: vec![genesis_header],
+            checkpoints: vec![],
+            filter_headers: vec![],
+        }
     }
 
     pub fn read() -> Result<Self, Error> {
@@ -47,7 +58,11 @@ mod tests {
             deserialize(&raw).expect("Can't deserialize correct block header");
 
         let headers = vec![header, header, header];
-        let db = Db { headers };
+        let db = Db {
+            headers,
+            checkpoints: vec![],
+            filter_headers: vec![],
+        };
         db.save().unwrap();
         let from_disk = Db::read().unwrap();
         assert_eq!(db, from_disk);
