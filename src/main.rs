@@ -76,8 +76,7 @@ pub struct Spv {
     pub headers: Vec<BlockHeader>,
     pub checkpoints: Vec<FilterHash>,
     pub filter_headers: Vec<FilterHash>,
-    //#[serde(skip)]
-    //pub filters: Vec<BlockFilter>,
+    pub filter_height: usize,
 }
 
 impl Spv {
@@ -88,6 +87,7 @@ impl Spv {
             headers: vec![genesis_header],
             checkpoints: vec![],
             filter_headers: vec![],
+            filter_height: 0,
         }
     }
 
@@ -110,8 +110,6 @@ impl Spv {
         Ok(())
     }
     pub fn run(&mut self) {
-        let mut filters: Vec<BlockFilter> = vec![];
-
         //let mut filter_headers: Vec<FilterHash> = vec![FilterHash::from_str(
         //&"0000000000000000000000000000000000000000000000000000000000000000",
         //)
@@ -145,224 +143,12 @@ impl Spv {
         let mut stream_reader = StreamReader::new(read_stream, None);
         loop {
             // Loop an retrieve new messages
-            let reply: message::RawNetworkMessage = stream_reader.read_next().unwrap();
-            match reply.payload {
-                message::NetworkMessage::Version(_) => {
-                    println!("Received version message: {:?}", reply.payload);
-                    self.send_msg(&mut stream, message::NetworkMessage::Verack)
-                        .expect("couldn't send message");
-                    println!("Sent verack message");
-                }
-                message::NetworkMessage::Verack => {
-                    println!("Received verack message: {:?}", reply.payload);
-                    let mut locator = vec![];
-                    for header in self.headers.iter().rev() {
-                        locator.push(header.bitcoin_hash());
-                        if locator.len() >= 10 {
-                            break;
-                        }
-                    }
-                    let payload = message::NetworkMessage::GetHeaders(GetHeadersMessage::new(
-                        locator,
-                        BlockHash::default(),
-                    ));
-                    self.send_msg(&mut stream, payload)
-                        .expect("Couldn't send message");
-                    println!("Sent getheaders message");
-                }
-                message::NetworkMessage::Headers(new_block_headers) => {
-                    //block_headers.append(&mut block_hashes.clone());
-                    for new_header in &new_block_headers {
-                        if let Some(last_header) = self.headers.last() {
-                            if last_header.bitcoin_hash() != new_header.prev_blockhash {
-                                continue;
-                            }
-                        } else {
-                            let genesis = BlockHash::from_str(
-                                &"000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
-                            )
-                            .unwrap();
-                            assert_eq!(genesis, new_header.bitcoin_hash());
-                        }
-
-                        self.headers.push(*new_header);
-                    }
-                    if new_block_headers.len() == 2000 {
-                        //if self.headers.len() < 10000 {
-                        // Send getheaders
-                        println!(
-                            "Received {} headers, {} total",
-                            new_block_headers.len(),
-                            self.headers.len()
-                        );
-
-                        // FIXME: method
-                        let mut locator = vec![];
-
-                        for header in self.headers.iter().rev() {
-                            locator.push(header.bitcoin_hash());
-                            if locator.len() >= 10 {
-                                break;
-                            }
-                        }
-
-                        let payload = message::NetworkMessage::GetHeaders(GetHeadersMessage::new(
-                            locator,
-                            BlockHash::default(),
-                        ));
-                        self.send_msg(&mut stream, payload)
-                            .expect("Couldn't send message");
-                        println!("Sent getheaders message");
-                    } else {
-                        // Save
-                        let start = std::time::Instant::now();
-                        println!("saving db");
-                        self.save().unwrap();
-                        println!("saved db");
-                        let end = std::time::Instant::now();
-                        println!("Elapsed time saving db: {:?}", end - start);
-
-                        // get filter checkpoints
-                        let payload = message::NetworkMessage::GetCFCheckpt(GetCFCheckpt {
-                            filter_type: 0,
-                            stop_hash: self.headers[self.headers.len() - 1].bitcoin_hash(),
-                        });
-                        self.send_msg(&mut stream, payload)
-                            .expect("Couldn't send message");
-                        println!("Sent getcfcheckpt");
-                    }
-                }
-                message::NetworkMessage::CFCheckpt(cfcheckpt) => {
-                    // Save checkpoints
-                    println!("received cfcheckpt: {:?}", &cfcheckpt);
-                    for filter_header in cfcheckpt.filter_headers {
-                        self.checkpoints.push(filter_header);
-                    }
-
-                    // Get filter headers
-                    let start_height = 0;
-                    let stop_hash = self.headers[self.filter_headers.len() + 999].bitcoin_hash();
-                    let payload = message::NetworkMessage::GetCFHeaders(GetCFHeaders {
-                        filter_type: 0,
-                        start_height,
-                        stop_hash,
-                    });
-                    self.send_msg(&mut stream, payload)
-                        .expect("Couldn't send message");
-                }
-                message::NetworkMessage::CFHeaders(cfheaders) => {
-                    let mut header = cfheaders.previous_filter;
-                    for filter_hash in cfheaders.filter_hashes.iter() {
-                        let mut header_data = [0u8; 64];
-                        header_data[0..32].copy_from_slice(&filter_hash[..]);
-                        header_data[32..64].copy_from_slice(&header[..]);
-                        header = FilterHash::hash(&header_data);
-                        if self.filter_headers.len() > 0 && self.filter_headers.len() % 1000 == 0 {
-                            let index = (self.filter_headers.len() / 1000) - 1;
-                            let checkpoint = self.checkpoints[index];
-                            assert_eq!(checkpoint, header);
-                        }
-                        self.filter_headers.push(header);
-                    }
-
-                    // Get Headers
-                    let start_height = self.filter_headers.len();
-                    let stop_height = std::cmp::min(
-                        self.filter_headers.len() + 999,
-                        self.headers.len() - self.filter_headers.len(),
-                    );
-                    let stop_hash = self.headers[stop_height].bitcoin_hash();
-                    let payload = message::NetworkMessage::GetCFHeaders(GetCFHeaders {
-                        filter_type: 0,
-                        start_height: start_height as u32,
-                        stop_hash,
-                    });
-                    self.send_msg(&mut stream, payload)
-                        .expect("Couldn't send message");
-                    println!(
-                        "Received cfheaders {:?} {:?}",
-                        cfheaders.filter_hashes.len(),
-                        self.filter_headers.len()
-                    );
-
-                    //if stop_height < 1000 {
-                    // Get Filters
-                    let start_height = self.filter_headers.len();
-                    if start_height >= self.headers.len() {
-                        continue;
-                    }
-                    let stop_hash = self.headers[start_height].bitcoin_hash();
-                    let payload = message::NetworkMessage::GetCFilters(GetCFilters {
-                        filter_type: 0,
-                        start_height: start_height as u32,
-                        stop_hash,
-                    });
-                    self.send_msg(&mut stream, payload)
-                        .expect("Couldn't send message");
-                    println!("Sent getcfilters");
-                    //}
-
-                    // FIXME: download the actual filters and check against the headers
-                }
-                message::NetworkMessage::CFilter(cfilter) => {
-                    println!("CFilter: {:?}\n\n\n", cfilter);
-                    let next_height = filters.len();
-                    let current_height = std::cmp::max(next_height, 0);
-                    let next_block_hash = self.headers[next_height].bitcoin_hash();
-
-                    // Check that
-                    if next_block_hash != cfilter.block_hash {
-                        println!("cfilter doesn't match");
-                        println!("filters.len() {}", filters.len());
-                        println!("height: {:?}", next_height);
-                        for i in 0..2 {
-                            println!("headers {}: {:?}", i, self.headers[i]);
-                        }
-                        println!("expected: {:?}", next_block_hash);
-                        println!("found: {:?}", cfilter.block_hash);
-                        continue;
-                    }
-
-                    // Check against header
-                    let filter = BlockFilter::new(&cfilter.filter);
-                    //let filter_hash = FilterHash::hash(filter.content.as_slice()); // Make a method
-                    let previous_header = if current_height == 0 {
-                        FilterHash::from_str(
-                            &"0000000000000000000000000000000000000000000000000000000000000000",
-                        )
-                        .unwrap()
-                    } else {
-                        self.filter_headers[next_height - 1]
-                    };
-                    let header = filter.filter_id(&previous_header);
-
-                    if self.filter_headers[next_height] != header {
-                        println!("filter headers doesn't match at {}", next_height);
-                        println!("expected: {:?}", self.filter_headers[next_height]);
-                        println!("found: {:?}", header);
-                        println!("block hash: {:?}", cfilter.block_hash);
-                        continue;
-                    }
-
-                    // Save the filter
-                    filters.push(filter);
-
-                    // Get more filters
-                    let payload = message::NetworkMessage::GetCFilters(GetCFilters {
-                        filter_type: 0,
-                        start_height: next_height as u32,
-                        stop_hash: self.headers[next_height + 1].bitcoin_hash(),
-                    });
-                    self.send_msg(&mut stream, payload)
-                        .expect("Couldn't send message");
-                }
-                _ => {
-                    println!("Received unknown message: {:?}", reply.cmd());
-                }
-            }
+            let msg: message::RawNetworkMessage = stream_reader.read_next().unwrap();
+            // FIXME: unreachable
+            self.handle_msg(&mut stream, msg)
+                .expect("Error sending message");
+            //let _ = stream.shutdown(Shutdown::Both);
         }
-        // FIXME: unreachable
-        //let _ = stream.shutdown(Shutdown::Both);
     }
     fn send_msg(
         &self,
@@ -376,6 +162,224 @@ impl Spv {
         stream.write_all(encode::serialize(&msg).as_slice())?;
         Ok(())
     }
+
+    fn handle_msg(
+        &mut self,
+        stream: &mut TcpStream,
+        msg: message::RawNetworkMessage,
+    ) -> Result<(), Error> {
+        let res = match msg.payload {
+            message::NetworkMessage::Version(_) => {
+                println!("Received version message: {:?}", msg.payload);
+                self.send_msg(stream, message::NetworkMessage::Verack)
+                    .expect("couldn't send message");
+                println!("Sent verack message");
+            }
+            message::NetworkMessage::Verack => {
+                println!("Received verack message: {:?}", msg.payload);
+                let mut locator = vec![];
+                for header in self.headers.iter().rev() {
+                    locator.push(header.bitcoin_hash());
+                    if locator.len() >= 10 {
+                        break;
+                    }
+                }
+                let payload = message::NetworkMessage::GetHeaders(GetHeadersMessage::new(
+                    locator,
+                    BlockHash::default(),
+                ));
+                self.send_msg(stream, payload)
+                    .expect("Couldn't send message");
+                println!("Sent getheaders message");
+            }
+            message::NetworkMessage::Headers(new_block_headers) => {
+                //block_headers.append(&mut block_hashes.clone());
+                for new_header in &new_block_headers {
+                    if let Some(last_header) = self.headers.last() {
+                        if last_header.bitcoin_hash() != new_header.prev_blockhash {
+                            continue;
+                        }
+                    } else {
+                        let genesis = BlockHash::from_str(
+                            &"000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+                        )
+                        .unwrap();
+                        assert_eq!(genesis, new_header.bitcoin_hash());
+                    }
+
+                    self.headers.push(*new_header);
+                }
+                if new_block_headers.len() == 2000 {
+                    //if self.headers.len() < 10000 {
+                    // Send getheaders
+                    println!(
+                        "Received {} headers, {} total",
+                        new_block_headers.len(),
+                        self.headers.len()
+                    );
+
+                    // FIXME: method
+                    let mut locator = vec![];
+
+                    for header in self.headers.iter().rev() {
+                        locator.push(header.bitcoin_hash());
+                        if locator.len() >= 10 {
+                            break;
+                        }
+                    }
+
+                    let payload = message::NetworkMessage::GetHeaders(GetHeadersMessage::new(
+                        locator,
+                        BlockHash::default(),
+                    ));
+                    self.send_msg(stream, payload)
+                        .expect("Couldn't send message");
+                    println!("Sent getheaders message");
+                } else {
+                    // Save
+                    let start = std::time::Instant::now();
+                    println!("saving db");
+                    self.save().unwrap();
+                    println!("saved db");
+                    let end = std::time::Instant::now();
+                    println!("Elapsed time saving db: {:?}", end - start);
+
+                    // get filter checkpoints
+                    let payload = message::NetworkMessage::GetCFCheckpt(GetCFCheckpt {
+                        filter_type: 0,
+                        stop_hash: self.headers[self.headers.len() - 1].bitcoin_hash(),
+                    });
+                    self.send_msg(stream, payload)
+                        .expect("Couldn't send message");
+                    println!("Sent getcfcheckpt");
+                }
+            }
+            message::NetworkMessage::CFCheckpt(cfcheckpt) => {
+                // Save checkpoints
+                println!("received cfcheckpt: {:?}", &cfcheckpt);
+                for filter_header in cfcheckpt.filter_headers {
+                    self.checkpoints.push(filter_header);
+                }
+
+                // Get filter headers
+                let start_height = 0;
+                let stop_hash = self.headers[self.filter_headers.len() + 999].bitcoin_hash();
+                let payload = message::NetworkMessage::GetCFHeaders(GetCFHeaders {
+                    filter_type: 0,
+                    start_height,
+                    stop_hash,
+                });
+                self.send_msg(stream, payload)
+                    .expect("Couldn't send message");
+            }
+            message::NetworkMessage::CFHeaders(cfheaders) => {
+                let mut header = cfheaders.previous_filter;
+                for filter_hash in cfheaders.filter_hashes.iter() {
+                    let mut header_data = [0u8; 64];
+                    header_data[0..32].copy_from_slice(&filter_hash[..]);
+                    header_data[32..64].copy_from_slice(&header[..]);
+                    header = FilterHash::hash(&header_data);
+                    if self.filter_headers.len() > 0 && self.filter_headers.len() % 1000 == 0 {
+                        let index = (self.filter_headers.len() / 1000) - 1;
+                        let checkpoint = self.checkpoints[index];
+                        assert_eq!(checkpoint, header);
+                    }
+                    self.filter_headers.push(header);
+                }
+
+                // Get Headers
+                let start_height = self.filter_headers.len();
+                let stop_height = std::cmp::min(
+                    self.filter_headers.len() + 999,
+                    self.headers.len() - self.filter_headers.len(),
+                );
+                let stop_hash = self.headers[stop_height].bitcoin_hash();
+                let payload = message::NetworkMessage::GetCFHeaders(GetCFHeaders {
+                    filter_type: 0,
+                    start_height: start_height as u32,
+                    stop_hash,
+                });
+                self.send_msg(stream, payload)
+                    .expect("Couldn't send message");
+                println!(
+                    "Received cfheaders {:?} {:?}",
+                    cfheaders.filter_hashes.len(),
+                    self.filter_headers.len()
+                );
+
+                //if stop_height < 1000 {
+                // Get Filters
+                let start_height = self.filter_headers.len();
+                if start_height >= self.headers.len() {
+                    ()
+                }
+                let stop_hash = self.headers[start_height].bitcoin_hash();
+                let payload = message::NetworkMessage::GetCFilters(GetCFilters {
+                    filter_type: 0,
+                    start_height: start_height as u32,
+                    stop_hash,
+                });
+                self.send_msg(stream, payload)
+                    .expect("Couldn't send message");
+                println!("Sent getcfilters");
+                //}
+
+                // FIXME: download the actual filters and check against the headers
+            }
+            message::NetworkMessage::CFilter(cfilter) => {
+                println!("CFilter: {:?}\n\n\n", cfilter);
+                let next_block_hash = self.headers[self.filter_height].bitcoin_hash();
+
+                // Check that
+                if next_block_hash != cfilter.block_hash {
+                    println!("cfilter doesn't match");
+                    println!("filter height: {:?}", self.filter_height);
+                    for i in 0..2 {
+                        println!("headers {}: {:?}", i, self.headers[i]);
+                    }
+                    println!("expected: {:?}", next_block_hash);
+                    println!("found: {:?}", cfilter.block_hash);
+                    ()
+                }
+
+                // Check against header
+                let filter = BlockFilter::new(&cfilter.filter);
+                //let filter_hash = FilterHash::hash(filter.content.as_slice()); // Make a method
+                let previous_header = if self.filter_height == 0 {
+                    FilterHash::from_str(
+                        &"0000000000000000000000000000000000000000000000000000000000000000",
+                    )
+                    .unwrap()
+                } else {
+                    self.filter_headers[self.filter_height - 1]
+                };
+                let header = filter.filter_id(&previous_header);
+
+                if self.filter_headers[self.filter_height] != header {
+                    println!("filter headers doesn't match at {}", self.filter_height);
+                    println!("expected: {:?}", self.filter_headers[self.filter_height]);
+                    println!("found: {:?}", header);
+                    println!("block hash: {:?}", cfilter.block_hash);
+                    ()
+                }
+
+                // Get more filters
+                let payload = message::NetworkMessage::GetCFilters(GetCFilters {
+                    filter_type: 0,
+                    start_height: self.filter_height as u32,
+                    // FIXME: why only one?
+                    stop_hash: self.headers[self.filter_height + 1].bitcoin_hash(),
+                });
+                self.send_msg(stream, payload)
+                    .expect("Couldn't send message");
+            }
+            _ => {
+                println!("Received unknown message: {:?}", msg.cmd());
+            }
+        };
+        Ok(())
+    }
+
     fn get_block(&self, block_id: &sha256d::Hash) -> Result<(), Error> {
         Ok(())
     }
@@ -390,7 +394,7 @@ fn main() {
 mod tests {
     use super::*;
     use bitcoin::consensus::encode::deserialize;
-    use bitcoin::{Address, BlockHeader, Script};
+    use bitcoin::{Address, BlockHeader};
     use hex::decode as hex_decode;
 
     #[test]
@@ -405,6 +409,7 @@ mod tests {
             headers,
             checkpoints: vec![],
             filter_headers: vec![],
+            filter_height: 0,
         };
         spv.save().unwrap();
         let from_disk = Spv::read().unwrap();
