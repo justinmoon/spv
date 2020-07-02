@@ -1,6 +1,17 @@
 Compile [this RP](https://github.com/bitcoin/bitcoin/pull/18876)
 
-Run bitcoind (from cloned bitcoin folder):
+```
+git clone git@github.com:bitcoin/bitcoin.git
+cd bitcoin
+git fetch origin pull/16442/head:bip157
+git checkout bip157
+./autogen.sh
+./configure
+make
+```
+(I had to run `./autogen.sh --with-incompatible-bdb` for some reason ...)
+
+Run bitcoind:
 
 ```
 ./src/bitcoind -regtest -blockfilterindex -peercfilters=1
@@ -8,7 +19,7 @@ Run bitcoind (from cloned bitcoin folder):
 
 Tips:
 - Add a `-daemon` flab to run in background
-- Add a `-debug` flab to see more logging information (helpful for debugging purposes)
+- Add a `-debug` flab to see more logging information (helpful for debugging why bitcoind rejects bad requests)
 
 Mine yourself some blocks:
 ```
@@ -40,6 +51,7 @@ Run this project:
 $ cargo run regtest 127.0.0.1:18444 $SPV_ADDR
 ...
 100000000
+...
 ```
 
 You should see a 1 BTC balance displayed (as satoshis)
