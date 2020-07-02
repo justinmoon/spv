@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::str::FromStr;
@@ -89,7 +90,7 @@ pub struct Spv {
     pub checkpoints: Vec<FilterHash>,
     pub filter_headers: Vec<FilterHash>,
     pub filter_height: usize,
-    utxos: Vec<UTXO>,
+    utxos: HashMap<OutPoint, UTXO>,
 }
 
 impl Spv {
@@ -104,7 +105,7 @@ impl Spv {
             checkpoints: vec![],
             filter_headers: vec![],
             filter_height: 0,
-            utxos: vec![],
+            utxos: HashMap::new(),
         }
     }
 
@@ -263,7 +264,9 @@ impl Spv {
 
                 // Get filter headers
                 let start_height = 0;
-                let stop_hash = self.headers[self.filter_headers.len() + 999].bitcoin_hash();
+                let stop_height =
+                    std::cmp::min(self.filter_headers.len() + 999, self.headers.len() - 1);
+                let stop_hash = self.headers[stop_height].bitcoin_hash();
                 let payload = message::NetworkMessage::GetCFHeaders(GetCFHeaders {
                     filter_type: 0,
                     start_height,
@@ -374,7 +377,7 @@ impl Spv {
                     let msg = message::NetworkMessage::GetData(vec![Inventory::Block(
                         cfilter.block_hash.clone(),
                     )]);
-                    return self.send_msg(stream, msg);
+                    self.send_msg(stream, msg)?;
                 } else {
                     // If the block isn't interesting, increment our filter height
                     self.filter_height += 1;
@@ -387,6 +390,7 @@ impl Spv {
                 println!("Received unknown message: {:?}", msg.cmd());
             }
         };
+        println!("balance={}", self.balance());
         Ok(())
     }
 
@@ -427,8 +431,14 @@ impl Spv {
                         txout: output.clone(),
                         outpoint,
                     };
-                    self.utxos.push(utxo);
+                    self.utxos.insert(outpoint, utxo);
                     println!("balance {:?}", self.balance());
+                }
+            }
+            for input in tx.input.iter() {
+                let detected_spend = self.utxos.remove(&input.previous_output).is_some();
+                if detected_spend {
+                    println!("balance changed: {}", self.balance())
                 }
             }
         }
@@ -438,7 +448,7 @@ impl Spv {
     }
 
     fn balance(&self) -> u64 {
-        self.utxos.iter().map(|u| u.txout.value).sum()
+        self.utxos.values().map(|u| u.txout.value).sum()
     }
 }
 
